@@ -26,7 +26,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import duckdb
 import pandas as pd
 
 from .schema import ColumnSchema, DataSchema, QualityCheck, QualityChecks

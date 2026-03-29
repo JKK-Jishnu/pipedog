@@ -366,7 +366,8 @@ pipedog/
       "p25": 3.25,
       "p50": 5.5,
       "p75": 7.75,
-      "allowed_values": null
+      "allowed_values": null,
+      "all_unique": true
     },
     {
       "name": "status",
@@ -376,7 +377,8 @@ pipedog/
       "null_pct": 0.0,
       "unique_count": 3,
       "sample_values": ["shipped", "pending", "delivered"],
-      "allowed_values": ["delivered", "pending", "shipped"]
+      "allowed_values": ["delivered", "pending", "shipped"],
+      "all_unique": false
     }
   ]
 }
