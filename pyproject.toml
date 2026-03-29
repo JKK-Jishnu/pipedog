@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "pipedog"
+version = "0.1.0"
+description = "CLI tool for data quality checks and schema drift detection on CSV, Parquet, and JSON files"
+authors = ["Jishn <you@example.com>"]
+readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/JKK-Jishnu/pipedog"
+repository = "https://github.com/JKK-Jishnu/pipedog"
+keywords = ["data-quality", "schema-drift", "data-validation", "cli", "csv", "parquet", "pandas"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+typer = {extras = ["all"], version = "^0.12.0"}
+rich = "^13.7.0"
+pandas = "^2.2.0"
+duckdb = "^0.10.0"
+pydantic = "^2.6.0"
+pyarrow = "^15.0.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^8.0.0"
+
+[tool.poetry.scripts]
+pipedog = "pipedog.main:app"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

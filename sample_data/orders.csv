@@ -1,0 +1,11 @@
+order_id,customer_id,product,quantity,price,order_date,status
+1,101,Widget A,2,19.99,2024-01-15,shipped
+2,102,Widget B,1,34.50,2024-01-16,pending
+3,103,Widget A,5,19.99,2024-01-17,shipped
+4,101,Gadget X,1,99.00,2024-01-18,delivered
+5,104,Widget B,3,34.50,2024-01-19,shipped
+6,105,Gadget X,2,99.00,2024-01-20,pending
+7,106,Widget A,1,19.99,2024-01-21,delivered
+8,107,Gadget Y,1,149.99,2024-01-22,shipped
+9,108,Widget B,4,34.50,2024-01-23,pending
+10,109,Gadget X,1,99.00,2024-01-24,delivered
