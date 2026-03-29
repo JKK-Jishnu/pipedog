@@ -81,7 +81,7 @@ def print_profile(schema: DataSchema) -> None:
     table.add_column("Unique", justify="right")
     table.add_column("Min", justify="right")
     table.add_column("Max", justify="right")
-    table.add_column("Sample Values", style="dim")
+    table.add_column("Sample Values", style="dim", min_width=12)
 
     for col in schema.columns:
         null_style = "red" if col.null_count > 0 else "green"
@@ -129,7 +129,7 @@ def print_init_success(
     console.print(Panel(
         f"[bold green]Schema snapshot saved to "
         f"[cyan]{profile_dir}/schema.json[/cyan][/bold green]{source_note}\n"
-        f"[green]{schema.column_count} columns · {schema.row_count:,} rows · "
+        f"[green]{schema.column_count} columns | {schema.row_count:,} rows | "
         f"{num_checks} quality checks generated[/green]",
         title="[bold green]Pipedog Initialized[/bold green]",
         border_style="green",
@@ -194,9 +194,9 @@ def print_scan_results(
 
     console.print(Panel(
         f"{status_text}\n"
-        f"[dim]{current_schema.row_count:,} rows · "
-        f"{current_schema.column_count} columns · "
-        f"{len(passed)} passed · {len(warnings)} warnings · "
+        f"[dim]{current_schema.row_count:,} rows | "
+        f"{current_schema.column_count} columns | "
+        f"{len(passed)} passed | {len(warnings)} warnings | "
         f"{len(failures)} failed[/dim]",
         title="[bold]Pipedog Scan[/bold]",
         border_style=border,
@@ -249,7 +249,7 @@ def print_checks_table(
     """
     profile_label = profile or "default"
     table = Table(
-        title=f"Quality Checks — profile: {profile_label}",
+        title=f"Quality Checks - profile: {profile_label}",
         box=box.ROUNDED,
         header_style="bold magenta",
         show_lines=False,
@@ -277,5 +277,5 @@ def print_checks_table(
     console.print()
     console.print(table)
     console.print(
-        f"[dim]{len(checks.checks)} rules · generated {checks.generated_at[:10]}[/dim]\n"
+        f"[dim]{len(checks.checks)} rules | generated {checks.generated_at[:10]}[/dim]\n"
     )

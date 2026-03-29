@@ -195,6 +195,8 @@ def profile_dataframe(df: pd.DataFrame, file_path: str) -> DataSchema:
         dtype = _dtype_name(series)
 
         # Sample values — convert non-JSON-serialisable types to strings.
+        # Datetime values are trimmed to date-only (YYYY-MM-DD) to avoid
+        # column truncation in the terminal profile table.
         sample_raw = series.dropna().head(5).tolist()
         sample_values: list[Any] = []
         for v in sample_raw:
@@ -202,7 +204,11 @@ def profile_dataframe(df: pd.DataFrame, file_path: str) -> DataSchema:
                 json.dumps(v)
                 sample_values.append(v)
             except (TypeError, ValueError):
-                sample_values.append(str(v))
+                s = str(v)
+                # Trim pandas Timestamp strings (e.g. "2024-01-15 00:00:00") to date only
+                if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+                    s = s[:10]
+                sample_values.append(s)
 
         # Numeric statistics.
         min_val = max_val = mean_val = std_val = p25 = p50 = p75 = None
