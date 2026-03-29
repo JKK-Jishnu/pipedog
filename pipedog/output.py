@@ -49,11 +49,13 @@ def print_profile(schema: DataSchema) -> None:
         schema: The DataSchema produced by profiler.profile_dataframe().
     """
     console.print()
-    console.print(Panel(
-        f"[bold cyan]{schema.file}[/bold cyan]",
-        title="[bold]Data Profile[/bold]",
-        border_style="cyan",
-    ))
+    if schema.source_files and len(schema.source_files) > 1:
+        file_display = "\n".join(f"[bold cyan]{f}[/bold cyan]" for f in schema.source_files)
+        title_label = f"[bold]Data Profile -- {len(schema.source_files)} files merged[/bold]"
+    else:
+        file_display = f"[bold cyan]{schema.file}[/bold cyan]"
+        title_label = "[bold]Data Profile[/bold]"
+    console.print(Panel(file_display, title=title_label, border_style="cyan"))
 
     summary = Table(show_header=False, box=box.SIMPLE, padding=(0, 1))
     summary.add_column("Key", style="dim")

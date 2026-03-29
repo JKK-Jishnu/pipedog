@@ -49,6 +49,10 @@ class ColumnSchema(BaseModel):
         allowed_values: Sorted list of all distinct values seen at init time,
                         for string/boolean columns with <= 50 unique values.
                         None means the column is not tracked for new values.
+        all_unique:     True when every source file had fully unique values in
+                        this column (i.e. it was a key column in all files).
+                        Used by generate_checks() to emit a `unique` check for
+                        merged baselines where unique_count is -1.
     """
 
     name: str
@@ -69,6 +73,8 @@ class ColumnSchema(BaseModel):
     p75: Optional[float] = None
     # Allowed values (v0.2.0) — only for low-cardinality string/boolean columns.
     allowed_values: Optional[list[Any]] = None
+    # Multi-file unique flag (v0.2.0) — True if key column across all source files.
+    all_unique: Optional[bool] = None
 
 
 class DataSchema(BaseModel):

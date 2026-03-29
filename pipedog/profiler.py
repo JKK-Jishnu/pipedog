@@ -406,6 +406,17 @@ def merge_schemas(schemas: list[DataSchema], file_paths: list[str]) -> DataSchem
                 if len(union_vals) <= ALLOWED_VALUES_MAX_CARDINALITY:
                     allowed_values = sorted(list(union_vals))
 
+        # Average std dev across files as a representative baseline.
+        std_devs = [c.std_dev for c in all_cols if c.std_dev is not None]
+        merged_std_dev = round(sum(std_devs) / len(std_devs), 4) if std_devs else None
+
+        # Track whether the column was a key column (all unique) in every file.
+        all_unique_flag = all(
+            c.unique_count == row_counts[i]
+            for i, c in enumerate(all_cols)
+            if c.unique_count != -1
+        )
+
         merged_columns.append(
             ColumnSchema(
                 name=col_name,
@@ -413,16 +424,17 @@ def merge_schemas(schemas: list[DataSchema], file_paths: list[str]) -> DataSchem
                 nullable=nullable,
                 null_count=null_count,
                 null_pct=null_pct,
-                unique_count=-1,  # Undefined across multiple files.
+                unique_count=-1,  # Undefined across multiple files; use all_unique instead.
                 sample_values=sample_values,
                 min_value=min_val,
                 max_value=max_val,
                 mean_value=mean_val,
-                std_dev=None,     # Cannot reconstruct from per-file std devs.
+                std_dev=merged_std_dev,
                 p25=p25,
                 p50=p50,
                 p75=p75,
                 allowed_values=allowed_values,
+                all_unique=all_unique_flag,
             )
         )
 
@@ -512,8 +524,13 @@ def generate_checks(schema: DataSchema) -> QualityChecks:
             ))
 
         # --- Uniqueness (key column detection) ---
-        # unique_count == -1 means multi-file merge; skip uniqueness check.
-        if col.unique_count == schema.row_count and schema.row_count > 1:
+        # For single-file baselines: unique_count == row_count.
+        # For merged baselines: unique_count == -1, so fall back to all_unique flag.
+        is_key_col = (
+            (col.unique_count == schema.row_count and schema.row_count > 1)
+            or col.all_unique is True
+        )
+        if is_key_col:
             checks.append(QualityCheck(
                 column=col.name,
                 check_type="unique",
