@@ -1,67 +1,94 @@
 """
 profiler.py — File loading, type inference, statistical profiling, and snapshot I/O.
 
-This module is the core of `pipedog init`. It is responsible for:
+This module is the core of `pipedog init`. Responsibilities:
   1. Reading CSV, Parquet, and JSON files into a pandas DataFrame.
-  2. Inferring a human-readable type for every column (integer, float, string,
-     boolean, datetime).
-  3. Computing per-column statistics (null counts, unique counts, value ranges).
+  2. Inferring a human-readable type for every column.
+  3. Computing per-column statistics (nulls, ranges, distribution, allowed values).
   4. Auto-generating quality rules from those statistics.
-  5. Persisting the snapshot and rules to .pipedog/ so `pipedog scan` can
-     load them later.
+  5. Merging statistics from multiple files into a single baseline (multi-file init).
+  6. Persisting snapshots to / reading snapshots from .pipedog/<profile>/.
 
 Snapshot layout on disk:
-    .pipedog/
+    .pipedog/<profile>/
         schema.json   — DataSchema (row count, column stats, timestamp)
-        checks.json   — QualityChecks (auto-generated rules)
+        checks.json   — QualityChecks (auto-generated + custom rules)
+        history.json  — ScanHistory (appended by history.py after each scan)
+        reports/      — HTML scan reports (created by reporter.py)
 """
 
 from __future__ import annotations
 
 import json
+import math
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import duckdb
 import pandas as pd
 
 from .schema import ColumnSchema, DataSchema, QualityCheck, QualityChecks
 
-# Directory and file names used for the on-disk snapshot.
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 PIPEDOG_DIR = ".pipedog"
 SCHEMA_FILE = "schema.json"
 CHECKS_FILE = "checks.json"
 
-# Raw pandas dtype prefixes that map to numeric columns.
-# Used as a guard before attempting min/max/mean calculations.
-NUMERIC_DTYPES = {"int64", "float64", "int32", "float32", "int16", "int8"}
+# Maximum number of distinct values a string/boolean column can have before
+# we stop tracking its allowed-value set (too many values = not categorical).
+ALLOWED_VALUES_MAX_CARDINALITY = 50
 
 
-def _pipedog_dir() -> Path:
-    """Return the Path object for the .pipedog snapshot directory."""
-    return Path(PIPEDOG_DIR)
+# ---------------------------------------------------------------------------
+# Directory helpers
+# ---------------------------------------------------------------------------
 
+def _pipedog_dir(profile: Optional[str] = None) -> Path:
+    """
+    Return the Path for the snapshot directory for the given profile.
+
+    Profile routing:
+        None / "default"  →  Path(".pipedog")           (backward compatible)
+        "purchase"        →  Path(".pipedog/purchase")
+        "gstr1"           →  Path(".pipedog/gstr1")
+
+    Args:
+        profile: Profile name, or None for the default profile.
+
+    Returns:
+        A Path object pointing to the profile's snapshot directory.
+    """
+    base = Path(PIPEDOG_DIR)
+    if profile and profile != "default":
+        return base / profile
+    return base
+
+
+# ---------------------------------------------------------------------------
+# File loading
+# ---------------------------------------------------------------------------
 
 def load_file(file_path: str) -> pd.DataFrame:
     """
     Read a data file into a pandas DataFrame.
 
     Dispatches to the correct pandas reader based on file extension.
-    Raises ValueError for unsupported extensions so the caller can show a
-    friendly error message instead of a raw pandas exception.
 
     Supported extensions:
         .csv             — read_csv (infers delimiter and dtypes automatically)
-        .parquet / .pq   — read_parquet (requires pyarrow to be installed)
-        .json            — read_json (expects a JSON array or records orientation)
+        .parquet / .pq   — read_parquet (requires pyarrow)
+        .json            — read_json (expects array or records orientation)
 
     Args:
         file_path: Relative or absolute path to the data file.
 
     Returns:
-        A pandas DataFrame with all columns and rows from the file.
+        A pandas DataFrame.
 
     Raises:
         FileNotFoundError: If the file does not exist.
@@ -76,17 +103,18 @@ def load_file(file_path: str) -> pd.DataFrame:
     elif ext == ".json":
         return pd.read_json(file_path)
     else:
-        raise ValueError(f"Unsupported file type: '{ext}'. Supported: .csv, .parquet, .json")
+        raise ValueError(
+            f"Unsupported file type: '{ext}'. Supported: .csv, .parquet, .json"
+        )
 
+
+# ---------------------------------------------------------------------------
+# Type inference
+# ---------------------------------------------------------------------------
 
 def _dtype_name(series: pd.Series) -> str:
     """
     Map a pandas Series to a human-readable Pipedog type string.
-
-    Pipedog collapses the many pandas numeric subtypes (int8, int32, int64,
-    float32, float64…) into simple labels that analysts can understand.
-    For object (string) columns it heuristically probes whether the values
-    look like dates by attempting pd.to_datetime on a small sample.
 
     Type mapping:
         int* dtype                     → "integer"
@@ -96,6 +124,9 @@ def _dtype_name(series: pd.Series) -> str:
         object dtype + other strings   → "string"
         datetime64[*] dtype            → "datetime"
         anything else                  → raw dtype string (fallback)
+
+    For object columns, heuristically probes the first 5 non-null values
+    for datetime parseability. Warnings are suppressed to keep output clean.
 
     Args:
         series: A single column from a pandas DataFrame.
@@ -111,10 +142,6 @@ def _dtype_name(series: pd.Series) -> str:
     if dtype == "bool":
         return "boolean"
     if dtype == "object":
-        # Heuristic: try to parse the first 5 non-null values as dates.
-        # If it succeeds, treat the whole column as datetime.
-        # Warnings are suppressed because pandas emits a noisy UserWarning
-        # when it falls back to dateutil for ambiguous formats.
         sample = series.dropna().head(5)
         if len(sample) > 0:
             try:
@@ -127,33 +154,34 @@ def _dtype_name(series: pd.Series) -> str:
         return "string"
     if "datetime" in dtype:
         return "datetime"
-    # Fallback: return the raw dtype string for unexpected types.
     return dtype
 
+
+# ---------------------------------------------------------------------------
+# Profiling
+# ---------------------------------------------------------------------------
 
 def profile_dataframe(df: pd.DataFrame, file_path: str) -> DataSchema:
     """
     Compute per-column statistics for a DataFrame and return a DataSchema.
 
-    For each column this function records:
-      - The inferred Pipedog type (via _dtype_name).
+    For each column computes:
+      - Inferred Pipedog type (via _dtype_name).
       - Null count and null percentage.
       - Distinct value count (excluding nulls).
-      - Up to 5 non-null sample values (JSON-safe; non-serialisable values
-        are converted to strings).
-      - Numeric min, max, and mean (only for integer/float columns).
+      - Up to 5 non-null sample values (JSON-safe).
+      - Numeric: min, max, mean, std_dev, p25, p50, p75.
+      - String/boolean with <= 50 unique values: allowed_values list.
 
-    The returned DataSchema is the canonical "snapshot" used by both the
-    `init` command (to persist a baseline) and the `scan` command (to
-    describe the current file for comparison).
+    Also sets DataSchema.row_count_mean / row_count_std / source_files for
+    single-file init so the row_count quality check always has a baseline.
 
     Args:
         df:        The DataFrame to profile.
-        file_path: Original path to the source file (stored in the snapshot
-                   as an absolute path for traceability).
+        file_path: Original path to the source file (stored as absolute path).
 
     Returns:
-        A DataSchema containing metadata and per-column statistics.
+        A DataSchema containing file metadata and per-column statistics.
     """
     columns: list[ColumnSchema] = []
 
@@ -166,8 +194,7 @@ def profile_dataframe(df: pd.DataFrame, file_path: str) -> DataSchema:
         unique_count = int(series.nunique(dropna=True))
         dtype = _dtype_name(series)
 
-        # Collect sample values, converting anything that isn't JSON-safe
-        # (e.g. numpy scalars, Timestamps) to plain strings.
+        # Sample values — convert non-JSON-serialisable types to strings.
         sample_raw = series.dropna().head(5).tolist()
         sample_values: list[Any] = []
         for v in sample_raw:
@@ -177,16 +204,27 @@ def profile_dataframe(df: pd.DataFrame, file_path: str) -> DataSchema:
             except (TypeError, ValueError):
                 sample_values.append(str(v))
 
-        # Numeric stats are only meaningful for integer and float columns.
-        min_val = max_val = mean_val = None
+        # Numeric statistics.
+        min_val = max_val = mean_val = std_val = p25 = p50 = p75 = None
         if dtype in ("integer", "float"):
-            # Use errors="coerce" so any non-numeric stragglers become NaN
-            # rather than raising an exception.
             numeric = pd.to_numeric(series, errors="coerce").dropna()
             if len(numeric) > 0:
                 min_val = float(numeric.min())
                 max_val = float(numeric.max())
                 mean_val = round(float(numeric.mean()), 4)
+                std_val = round(float(numeric.std()), 4) if len(numeric) > 1 else 0.0
+                p25 = round(float(numeric.quantile(0.25)), 4)
+                p50 = round(float(numeric.quantile(0.50)), 4)
+                p75 = round(float(numeric.quantile(0.75)), 4)
+
+        # Allowed values — only for low-cardinality string/boolean columns.
+        # This enables the allowed_values quality check which catches new
+        # category values introduced after the baseline was created.
+        allowed_values = None
+        if dtype in ("string", "boolean") and 0 < unique_count <= ALLOWED_VALUES_MAX_CARDINALITY:
+            allowed_values = sorted(
+                [str(v) for v in series.dropna().unique().tolist()]
+            )
 
         columns.append(
             ColumnSchema(
@@ -200,48 +238,232 @@ def profile_dataframe(df: pd.DataFrame, file_path: str) -> DataSchema:
                 min_value=min_val,
                 max_value=max_val,
                 mean_value=mean_val,
+                std_dev=std_val,
+                p25=p25,
+                p50=p50,
+                p75=p75,
+                allowed_values=allowed_values,
             )
         )
 
+    abs_path = str(Path(file_path).resolve())
+    row_count = len(df)
+
     return DataSchema(
-        file=str(Path(file_path).resolve()),
-        row_count=len(df),
+        file=abs_path,
+        row_count=row_count,
         column_count=len(df.columns),
         columns=columns,
         captured_at=datetime.now(timezone.utc).isoformat(),
+        # Single-file baselines still populate these so row_count check fires.
+        source_files=[abs_path],
+        row_count_mean=float(row_count),
+        row_count_std=0.0,
     )
 
+
+# ---------------------------------------------------------------------------
+# Multi-file merge
+# ---------------------------------------------------------------------------
+
+def merge_schemas(schemas: list[DataSchema], file_paths: list[str]) -> DataSchema:
+    """
+    Merge per-file DataSchema objects into one representative baseline.
+
+    Used by `pipedog init file1.csv file2.csv file3.csv` to create a single
+    baseline that reflects the normal pattern across all input files.
+
+    Column consistency rules:
+        - Every file must have the same column names in the same order.
+        - Every file must have the same dtype for each column.
+        Raises ValueError with a clear message if either rule is violated.
+
+    Merging rules per field:
+        dtype           → must be identical (already validated)
+        nullable        → True if ANY file had a null in that column
+        null_count      → sum across all files
+        null_pct        → weighted average by row count
+        unique_count    → set to -1 (cross-file uniqueness is undefined)
+        sample_values   → union of all sample_values, up to 5 entries
+        min_value       → global minimum across all files
+        max_value       → global maximum across all files
+        mean_value      → weighted average by row count
+        std_dev         → None (cannot reconstruct from per-file std devs)
+        p25/p50/p75     → simple average of per-file percentiles
+        allowed_values  → union of all per-file sets; set to None if union > 50
+
+    DataSchema-level merging:
+        row_count       → total rows across all files
+        row_count_mean  → mean of per-file row counts
+        row_count_std   → std dev of per-file row counts
+        source_files    → all input file paths
+        file            → the first file path (representative label)
+
+    Args:
+        schemas:    List of DataSchema objects (one per input file).
+        file_paths: Corresponding original file path strings.
+
+    Returns:
+        A single merged DataSchema representing the baseline.
+
+    Raises:
+        ValueError: If column structures differ across input files.
+    """
+    if len(schemas) == 1:
+        return schemas[0]
+
+    ref = schemas[0]
+
+    # --- Validate structural consistency across all files ---
+    for i, s in enumerate(schemas[1:], start=2):
+        ref_names = [c.name for c in ref.columns]
+        cur_names = [c.name for c in s.columns]
+        if ref_names != cur_names:
+            raise ValueError(
+                f"Column mismatch between file 1 and file {i}.\n"
+                f"  File 1 columns: {ref_names}\n"
+                f"  File {i} columns: {cur_names}\n"
+                "All files must have identical column names in the same order."
+            )
+        for r_col, c_col in zip(ref.columns, s.columns):
+            if r_col.dtype != c_col.dtype:
+                raise ValueError(
+                    f"Type mismatch in column '{r_col.name}': "
+                    f"file 1 has '{r_col.dtype}', file {i} has '{c_col.dtype}'.\n"
+                    "All files must have the same column types."
+                )
+
+    # --- Merge per-column statistics ---
+    row_counts = [s.row_count for s in schemas]
+    total_rows = sum(row_counts)
+    merged_columns: list[ColumnSchema] = []
+
+    for col_idx, ref_col in enumerate(ref.columns):
+        col_name = ref_col.name
+        dtype = ref_col.dtype
+
+        all_cols = [s.columns[col_idx] for s in schemas]
+
+        nullable = any(c.nullable for c in all_cols)
+        null_count = sum(c.null_count for c in all_cols)
+        # Weighted average null percentage.
+        null_pct = round(
+            sum(c.null_pct * r for c, r in zip(all_cols, row_counts)) / total_rows, 2
+        ) if total_rows > 0 else 0.0
+
+        # Union of sample values, deduplicated, up to 5.
+        seen: list[Any] = []
+        for c in all_cols:
+            for v in c.sample_values:
+                if v not in seen:
+                    seen.append(v)
+                if len(seen) >= 5:
+                    break
+            if len(seen) >= 5:
+                break
+        sample_values = seen
+
+        # Numeric stats.
+        min_val = max_val = mean_val = p25 = p50 = p75 = None
+        if dtype in ("integer", "float"):
+            mins = [c.min_value for c in all_cols if c.min_value is not None]
+            maxs = [c.max_value for c in all_cols if c.max_value is not None]
+            means = [c.mean_value for c in all_cols if c.mean_value is not None]
+            p25s = [c.p25 for c in all_cols if c.p25 is not None]
+            p50s = [c.p50 for c in all_cols if c.p50 is not None]
+            p75s = [c.p75 for c in all_cols if c.p75 is not None]
+            if mins:
+                min_val = min(mins)
+            if maxs:
+                max_val = max(maxs)
+            if means:
+                # Weighted average mean.
+                non_null_counts = [r - c.null_count for c, r in zip(all_cols, row_counts)]
+                total_non_null = sum(non_null_counts)
+                if total_non_null > 0:
+                    mean_val = round(
+                        sum(m * n for m, n in zip(means, non_null_counts)) / total_non_null, 4
+                    )
+            if p25s:
+                p25 = round(sum(p25s) / len(p25s), 4)
+            if p50s:
+                p50 = round(sum(p50s) / len(p50s), 4)
+            if p75s:
+                p75 = round(sum(p75s) / len(p75s), 4)
+
+        # Allowed values: union of all sets; discard if union > 50.
+        allowed_values = None
+        if dtype in ("string", "boolean"):
+            all_sets = [set(c.allowed_values) for c in all_cols if c.allowed_values is not None]
+            if all_sets:
+                union_vals = set().union(*all_sets)
+                if len(union_vals) <= ALLOWED_VALUES_MAX_CARDINALITY:
+                    allowed_values = sorted(list(union_vals))
+
+        merged_columns.append(
+            ColumnSchema(
+                name=col_name,
+                dtype=dtype,
+                nullable=nullable,
+                null_count=null_count,
+                null_pct=null_pct,
+                unique_count=-1,  # Undefined across multiple files.
+                sample_values=sample_values,
+                min_value=min_val,
+                max_value=max_val,
+                mean_value=mean_val,
+                std_dev=None,     # Cannot reconstruct from per-file std devs.
+                p25=p25,
+                p50=p50,
+                p75=p75,
+                allowed_values=allowed_values,
+            )
+        )
+
+    # --- Row count statistics ---
+    row_count_mean = sum(row_counts) / len(row_counts)
+    row_count_std = (
+        math.sqrt(sum((r - row_count_mean) ** 2 for r in row_counts) / len(row_counts))
+        if len(row_counts) > 1 else 0.0
+    )
+
+    return DataSchema(
+        file=str(Path(file_paths[0]).resolve()),
+        row_count=total_rows,
+        column_count=ref.column_count,
+        columns=merged_columns,
+        captured_at=datetime.now(timezone.utc).isoformat(),
+        source_files=[str(Path(p).resolve()) for p in file_paths],
+        row_count_mean=round(row_count_mean, 2),
+        row_count_std=round(row_count_std, 2),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check generation
+# ---------------------------------------------------------------------------
 
 def generate_checks(schema: DataSchema) -> QualityChecks:
     """
     Auto-generate quality rules from a baseline DataSchema.
 
     Rules are derived directly from what was observed at init time, making
-    Pipedog zero-config. The generated rules are intentionally conservative:
-    they catch real regressions (nulls appearing in a previously clean column,
-    values falling outside the observed range) without being so strict that
-    they flag normal day-to-day variation.
+    Pipedog zero-config. Generated rules per column:
 
-    Rules generated per column:
+        not_null        If baseline had zero nulls → enforce strictly.
+        null_rate       If baseline had some nulls → allow up to pct + 10pp.
+        min_value       Numeric: lock in observed minimum.
+        max_value       Numeric: lock in observed maximum.
+        unique          Column was fully unique (key column detection).
+        allowed_values  Low-cardinality string/bool: flag new category values.
+        std_dev_change  Numeric: flag if std deviation changes > 50%.
 
-    not_null (if baseline had zero nulls):
-        The column must remain fully populated. Any null introduced after
-        init will fail this check with exit code 1.
-
-    null_rate (if baseline already had some nulls):
-        The null percentage must stay below baseline_pct + 10 percentage
-        points. Gives headroom for normal variation while catching spikes.
-
-    min_value / max_value (numeric columns only):
-        Values must stay within the range observed at init time. Useful for
-        catching upstream bugs (negative IDs, impossible ages, etc.).
-
-    unique (if every value was distinct at init time):
-        Column is treated as a key column and must remain duplicate-free.
-        A single duplicate will fail this check.
+    Schema-level rules (one per file, not per column):
+        row_count       File must have >= 80% of baseline average row count.
 
     Args:
-        schema: The baseline DataSchema produced by profile_dataframe().
+        schema: The baseline DataSchema produced by profile_dataframe()
+                or merge_schemas().
 
     Returns:
         A QualityChecks object containing all generated rules.
@@ -251,56 +473,87 @@ def generate_checks(schema: DataSchema) -> QualityChecks:
     for col in schema.columns:
         # --- Nullability ---
         if not col.nullable:
-            # Column was null-free at init → enforce strict not-null.
-            checks.append(
-                QualityCheck(
-                    column=col.name,
-                    check_type="not_null",
-                    description=f"'{col.name}' must have no null values",
-                    threshold=0.0,
-                )
-            )
+            checks.append(QualityCheck(
+                column=col.name,
+                check_type="not_null",
+                description=f"'{col.name}' must have no null values",
+                threshold=0.0,
+            ))
         elif col.null_pct > 0:
-            # Column already had nulls → allow up to 10pp more before alarming.
-            checks.append(
-                QualityCheck(
-                    column=col.name,
-                    check_type="null_rate",
-                    description=f"'{col.name}' null rate should stay below {min(col.null_pct + 10, 100):.1f}%",
-                    threshold=round(min(col.null_pct + 10, 100), 2),
-                )
-            )
+            checks.append(QualityCheck(
+                column=col.name,
+                check_type="null_rate",
+                description=(
+                    f"'{col.name}' null rate should stay below "
+                    f"{min(col.null_pct + 10, 100):.1f}%"
+                ),
+                threshold=round(min(col.null_pct + 10, 100), 2),
+            ))
 
         # --- Numeric range ---
         if col.dtype in ("integer", "float") and col.min_value is not None:
-            checks.append(
-                QualityCheck(
-                    column=col.name,
-                    check_type="min_value",
-                    description=f"'{col.name}' minimum value should be >= {col.min_value}",
-                    threshold=col.min_value,
-                )
-            )
-            checks.append(
-                QualityCheck(
-                    column=col.name,
-                    check_type="max_value",
-                    description=f"'{col.name}' maximum value should be <= {col.max_value}",
-                    threshold=col.max_value,
-                )
-            )
+            checks.append(QualityCheck(
+                column=col.name,
+                check_type="min_value",
+                description=f"'{col.name}' minimum value should be >= {col.min_value}",
+                threshold=col.min_value,
+            ))
+            checks.append(QualityCheck(
+                column=col.name,
+                check_type="max_value",
+                description=f"'{col.name}' maximum value should be <= {col.max_value}",
+                threshold=col.max_value,
+            ))
 
-        # --- Uniqueness ---
-        # Only flag columns where *every* row was unique and the dataset had
-        # more than 1 row (a 1-row file trivially has all unique values).
+        # --- Uniqueness (key column detection) ---
+        # unique_count == -1 means multi-file merge; skip uniqueness check.
         if col.unique_count == schema.row_count and schema.row_count > 1:
-            checks.append(
-                QualityCheck(
-                    column=col.name,
-                    check_type="unique",
-                    description=f"'{col.name}' should contain only unique values (looks like a key column)",
-                )
-            )
+            checks.append(QualityCheck(
+                column=col.name,
+                check_type="unique",
+                description=(
+                    f"'{col.name}' should contain only unique values "
+                    "(looks like a key column)"
+                ),
+            ))
+
+        # --- Allowed values (new category detection) ---
+        if col.allowed_values is not None:
+            checks.append(QualityCheck(
+                column=col.name,
+                check_type="allowed_values",
+                description=(
+                    f"'{col.name}' must only contain "
+                    f"{len(col.allowed_values)} known values"
+                ),
+                expected_value=col.allowed_values,
+            ))
+
+        # --- Distribution drift ---
+        if col.std_dev is not None and col.std_dev > 0:
+            checks.append(QualityCheck(
+                column=col.name,
+                check_type="std_dev_change",
+                description=(
+                    f"'{col.name}' std deviation should not change "
+                    f"> 50% from baseline ({col.std_dev})"
+                ),
+                threshold=col.std_dev,
+            ))
+
+    # --- Row count check (schema-level, not per-column) ---
+    # Uses row_count_mean so multi-file baselines get a sensible threshold.
+    baseline_mean = schema.row_count_mean or float(schema.row_count)
+    threshold_rows = baseline_mean * 0.80
+    checks.append(QualityCheck(
+        column="__row_count__",
+        check_type="row_count",
+        description=(
+            f"File must have at least 80% of baseline row count "
+            f"({baseline_mean:.0f} rows avg)"
+        ),
+        threshold=round(threshold_rows, 2),
+    ))
 
     return QualityChecks(
         file=schema.file,
@@ -309,57 +562,70 @@ def generate_checks(schema: DataSchema) -> QualityChecks:
     )
 
 
-def save_snapshot(schema: DataSchema, checks: QualityChecks) -> None:
+# ---------------------------------------------------------------------------
+# Snapshot I/O
+# ---------------------------------------------------------------------------
+
+def save_snapshot(
+    schema: DataSchema,
+    checks: QualityChecks,
+    profile: Optional[str] = None,
+) -> None:
     """
-    Persist the schema snapshot and quality checks to .pipedog/.
+    Persist the schema snapshot and quality checks to .pipedog/<profile>/.
 
-    Creates the .pipedog/ directory if it does not exist, then writes:
-        .pipedog/schema.json  — the DataSchema as pretty-printed JSON
-        .pipedog/checks.json  — the QualityChecks as pretty-printed JSON
-
-    Overwrites any existing files, so re-running `pipedog init` always
-    refreshes the baseline to the current state of the file.
+    Creates the directory tree if it does not exist (including the reports/
+    subdirectory), then writes schema.json and checks.json. Overwrites any
+    existing files, so re-running `pipedog init` always refreshes the baseline.
 
     Args:
-        schema: The DataSchema returned by profile_dataframe().
-        checks: The QualityChecks returned by generate_checks().
+        schema:  The DataSchema returned by profile_dataframe() or merge_schemas().
+        checks:  The QualityChecks returned by generate_checks().
+        profile: Profile name; None for the default profile.
     """
-    pipedog_dir = _pipedog_dir()
-    pipedog_dir.mkdir(exist_ok=True)
+    pipedog_dir = _pipedog_dir(profile)
+    pipedog_dir.mkdir(parents=True, exist_ok=True)
+    # Pre-create reports/ so the first scan can write there immediately.
+    (pipedog_dir / "reports").mkdir(exist_ok=True)
 
-    schema_path = pipedog_dir / SCHEMA_FILE
-    schema_path.write_text(schema.model_dump_json(indent=2))
-
-    checks_path = pipedog_dir / CHECKS_FILE
-    checks_path.write_text(checks.model_dump_json(indent=2))
+    (pipedog_dir / SCHEMA_FILE).write_text(schema.model_dump_json(indent=2))
+    (pipedog_dir / CHECKS_FILE).write_text(checks.model_dump_json(indent=2))
 
 
-def load_snapshot() -> tuple[DataSchema, QualityChecks]:
+def load_snapshot(
+    profile: Optional[str] = None,
+) -> tuple[DataSchema, QualityChecks]:
     """
-    Load the baseline schema and quality checks from .pipedog/.
+    Load the baseline schema and quality checks from .pipedog/<profile>/.
 
-    Reads .pipedog/schema.json and .pipedog/checks.json, validates the JSON
-    against the Pydantic models, and returns both objects. Called by
-    `pipedog scan` before comparing the new file against the baseline.
+    Reads schema.json and checks.json, validates against Pydantic models,
+    and returns both objects. Called by `pipedog scan` before comparing
+    the new file against the baseline.
+
+    Args:
+        profile: Profile name; None for the default profile.
 
     Returns:
         A tuple of (DataSchema, QualityChecks).
 
     Raises:
-        FileNotFoundError: If either snapshot file is missing, with a
-                           message directing the user to run `pipedog init`.
+        FileNotFoundError: If either snapshot file is missing, with a message
+                           directing the user to run `pipedog init`.
     """
-    pipedog_dir = _pipedog_dir()
+    pipedog_dir = _pipedog_dir(profile)
     schema_path = pipedog_dir / SCHEMA_FILE
     checks_path = pipedog_dir / CHECKS_FILE
+    profile_hint = f" --profile {profile}" if profile else ""
 
     if not schema_path.exists():
         raise FileNotFoundError(
-            "No schema snapshot found. Run `pipedog init <file>` first."
+            f"No schema snapshot found. "
+            f"Run `pipedog init <file>{profile_hint}` first."
         )
     if not checks_path.exists():
         raise FileNotFoundError(
-            "No quality checks found. Run `pipedog init <file>` first."
+            f"No quality checks found. "
+            f"Run `pipedog init <file>{profile_hint}` first."
         )
 
     schema = DataSchema.model_validate_json(schema_path.read_text())
