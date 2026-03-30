@@ -2,7 +2,7 @@
 profiler.py — File loading, type inference, statistical profiling, and snapshot I/O.
 
 This module is the core of `pipedog init`. Responsibilities:
-  1. Reading CSV, Parquet, and JSON files into a pandas DataFrame.
+  1. Reading CSV, Parquet, JSON, Excel (.xlsx), and Excel Binary (.xlsb) files into a pandas DataFrame.
   2. Inferring a human-readable type for every column.
   3. Computing per-column statistics (nulls, ranges, distribution, allowed values).
   4. Auto-generating quality rules from those statistics.
@@ -79,9 +79,15 @@ def load_file(file_path: str) -> pd.DataFrame:
     Dispatches to the correct pandas reader based on file extension.
 
     Supported extensions:
-        .csv             — read_csv (infers delimiter and dtypes automatically)
-        .parquet / .pq   — read_parquet (requires pyarrow)
-        .json            — read_json (expects array or records orientation)
+        .csv               — read_csv (infers delimiter and dtypes automatically)
+        .parquet / .pq     — read_parquet (requires pyarrow)
+        .json              — read_json (expects array or records orientation)
+        .xlsx              — read_excel via openpyxl (reads first sheet by default)
+        .xlsb              — read_excel via pyxlsb (reads first sheet by default)
+
+    For Excel files, the first sheet is read by default. To read a specific
+    sheet, the file must be handled programmatically — the CLI always reads
+    the first sheet.
 
     Args:
         file_path: Relative or absolute path to the data file.
@@ -91,9 +97,12 @@ def load_file(file_path: str) -> pd.DataFrame:
 
     Raises:
         FileNotFoundError: If the file does not exist.
-        ValueError:        If the file extension is not supported.
+        ValueError:        If the file extension is not supported, or if a
+                           required Excel engine is not installed.
     """
     path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: '{file_path}'")
     ext = path.suffix.lower()
     if ext == ".csv":
         return pd.read_csv(file_path)
@@ -101,9 +110,26 @@ def load_file(file_path: str) -> pd.DataFrame:
         return pd.read_parquet(file_path)
     elif ext == ".json":
         return pd.read_json(file_path)
+    elif ext == ".xlsx":
+        try:
+            return pd.read_excel(file_path, engine="openpyxl")
+        except ImportError:
+            raise ValueError(
+                "Reading .xlsx files requires openpyxl. "
+                "Install it with: pip install openpyxl"
+            )
+    elif ext == ".xlsb":
+        try:
+            return pd.read_excel(file_path, engine="pyxlsb")
+        except ImportError:
+            raise ValueError(
+                "Reading .xlsb files requires pyxlsb. "
+                "Install it with: pip install pyxlsb"
+            )
     else:
         raise ValueError(
-            f"Unsupported file type: '{ext}'. Supported: .csv, .parquet, .json"
+            f"Unsupported file type: '{ext}'. "
+            "Supported: .csv, .parquet, .pq, .json, .xlsx, .xlsb"
         )
 
 

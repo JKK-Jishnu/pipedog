@@ -1,13 +1,13 @@
 [tool.poetry]
 name = "pipedog"
-version = "0.2.1"
-description = "CLI tool for data quality checks and schema drift detection on CSV, Parquet, and JSON files"
+version = "0.3.0"
+description = "Data quality and schema drift detection for analysts — CSV, Excel, Parquet, and JSON files"
 authors = ["Jishn <you@example.com>"]
 readme = "README.md"
 license = "MIT"
 homepage = "https://github.com/JKK-Jishnu/pipedog"
 repository = "https://github.com/JKK-Jishnu/pipedog"
-keywords = ["data-quality", "schema-drift", "data-validation", "cli", "csv", "parquet", "pandas"]
+keywords = ["data-quality", "schema-drift", "data-validation", "cli", "csv", "excel", "xlsx", "parquet", "pandas", "data-analyst"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -32,6 +32,8 @@ pandas = "^2.2.0"
 duckdb = "^0.10.0"
 pydantic = "^2.6.0"
 pyarrow = "^15.0.0"
+openpyxl = "^3.1.0"
+pyxlsb = "^1.0.10"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

@@ -278,13 +278,16 @@ Commit `.pipedog/` to version control to track schema changes over time, or add 
 
 ## Supported File Types
 
-| Extension         | Format  |
-|-------------------|---------|
-| `.csv`            | CSV     |
-| `.parquet` `.pq`  | Parquet |
-| `.json`           | JSON    |
+| Extension         | Format  | Engine    |
+|-------------------|---------|-----------|
+| `.csv`            | CSV     | pandas    |
+| `.parquet` `.pq`  | Parquet | pyarrow   |
+| `.json`           | JSON    | pandas    |
+| `.xlsx`           | Excel   | openpyxl  |
+| `.xlsb`           | Excel Binary | pyxlsb |
 
 File type is detected automatically from the extension.
+For Excel files, the first sheet is read by default.
 
 ---
 
