@@ -144,6 +144,7 @@ def print_scan_results(
     check_results: list[CheckResult],
     current_schema: DataSchema,
     report_path: Optional[Path] = None,
+    excel_report_path: Optional[Path] = None,
 ) -> bool:
     """
     Render the full scan report and return whether the scan passed.
@@ -227,7 +228,11 @@ def print_scan_results(
 
     if report_path:
         console.print(
-            f"\n[dim]HTML report saved: [cyan]{report_path}[/cyan][/dim]"
+            f"\n[dim]HTML report saved:  [cyan]{report_path}[/cyan][/dim]"
+        )
+    if excel_report_path:
+        console.print(
+            f"[dim]Excel report saved: [cyan]{excel_report_path}[/cyan][/dim]"
         )
 
     console.print()

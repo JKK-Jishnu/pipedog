@@ -54,7 +54,13 @@ from .profiler import (
     profile_dataframe,
     save_snapshot,
 )
-from .reporter import generate_html_report, open_last_report, save_report
+from .reporter import (
+    generate_excel_report,
+    generate_html_report,
+    open_last_report,
+    save_excel_report,
+    save_report,
+)
 from .scanner import detect_drift, run_quality_checks
 from .schema import QualityCheck, QualityChecks
 
@@ -194,8 +200,9 @@ def scan(
     drift_results = detect_drift(baseline_schema, current_schema)
     check_results = run_quality_checks(df, current_schema, checks)
 
-    # Generate HTML report unless suppressed.
+    # Generate reports unless suppressed.
     report_path: Optional[Path] = None
+    excel_report_path: Optional[Path] = None
     if not no_report:
         try:
             html = generate_html_report(
@@ -205,8 +212,17 @@ def scan(
             )
             report_path = save_report(html, profile, file)
         except Exception as e:
-            # Report generation failure should not block the scan result.
             console.print(f"[yellow]Warning:[/yellow] Could not save HTML report: {e}")
+
+        try:
+            wb = generate_excel_report(
+                drift_results, check_results,
+                current_schema, baseline_schema,
+                profile, file,
+            )
+            excel_report_path = save_excel_report(wb, profile, file)
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/yellow] Could not save Excel report: {e}")
 
     # Append to scan history.
     try:
@@ -214,7 +230,10 @@ def scan(
     except Exception as e:
         console.print(f"[yellow]Warning:[/yellow] Could not update history: {e}")
 
-    passed = print_scan_results(drift_results, check_results, current_schema, report_path)
+    passed = print_scan_results(
+        drift_results, check_results, current_schema,
+        report_path, excel_report_path,
+    )
 
     if not passed:
         raise typer.Exit(1)

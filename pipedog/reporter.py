@@ -1,17 +1,27 @@
 """
-reporter.py — HTML scan report generation.
+reporter.py — HTML and Excel scan report generation.
 
-Generates a self-contained, human-readable HTML report after every
-`pipedog scan`. Reports have zero external dependencies at render time —
-all CSS is inline, no JavaScript frameworks, no CDN requests.
+Generates a self-contained, human-readable HTML report and an Excel (.xlsx)
+report after every `pipedog scan`.
+
+HTML reports have zero external dependencies at render time — all CSS is
+inline, no JavaScript frameworks, no CDN requests.
+
+Excel reports are formatted workbooks with 3 sheets:
+    Summary   — overall result, scan metadata, check counts
+    Results   — all checks as a filterable table, color-coded by status
+    Profile   — column statistics from the scanned file
 
 Reports are saved to:
     .pipedog/<profile>/reports/<stem>-<profile>-<YYYYMMDD-HHMMSS>.html
+    .pipedog/<profile>/reports/<stem>-<profile>-<YYYYMMDD-HHMMSS>.xlsx
 
 Key functions:
-    generate_html_report()  Build the HTML string from scan results.
-    save_report()           Write the HTML file and return its path.
-    open_last_report()      Open the most recent report in the system browser.
+    generate_html_report()   Build the HTML string from scan results.
+    save_report()            Write the HTML file and return its path.
+    generate_excel_report()  Build a formatted openpyxl Workbook.
+    save_excel_report()      Write the .xlsx file and return its path.
+    open_last_report()       Open the most recent report in the system browser.
 """
 
 from __future__ import annotations
@@ -20,6 +30,12 @@ import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from openpyxl import Workbook
+from openpyxl.styles import (
+    Alignment, Border, Font, PatternFill, Side
+)
+from openpyxl.utils import get_column_letter
 
 from . import __version__
 from .profiler import _pipedog_dir
@@ -335,6 +351,233 @@ def save_report(
 
     report_path = reports_dir / filename
     report_path.write_text(html, encoding="utf-8")
+    return report_path.resolve()
+
+
+def generate_excel_report(
+    drift_results: list[CheckResult],
+    check_results: list[CheckResult],
+    current_schema: DataSchema,
+    baseline_schema: DataSchema,
+    profile: Optional[str],
+    scanned_file: str,
+) -> Workbook:
+    """
+    Build a formatted Excel workbook from scan results.
+
+    Sheets:
+        Summary  — overall pass/fail banner, scan metadata, check counts.
+        Results  — all drift + quality check results as a filterable table,
+                   rows color-coded green/red/yellow by status.
+        Profile  — per-column statistics from the scanned file, null counts
+                   highlighted red when non-zero.
+
+    Color scheme matches Pipedog terminal output:
+        Pass    — green  (#16a34a fill, #dcfce7 row tint)
+        Fail    — red    (#dc2626 fill, #fef2f2 row tint)
+        Warning — amber  (#d97706 fill, #fef3c7 row tint)
+
+    Args:
+        drift_results:   CheckResult list from scanner.detect_drift().
+        check_results:   CheckResult list from scanner.run_quality_checks().
+        current_schema:  DataSchema profiled from the current file.
+        baseline_schema: DataSchema loaded from the saved snapshot.
+        profile:         Profile name, or None for the default profile.
+        scanned_file:    Path to the file that was scanned.
+
+    Returns:
+        An openpyxl Workbook ready to be saved with save_excel_report().
+    """
+    all_results = drift_results + check_results
+    failures = [r for r in all_results if not r.passed and r.severity == "error"]
+    warnings_list = [r for r in all_results if not r.passed and r.severity == "warning"]
+    passed_list = [r for r in all_results if r.passed]
+    overall_pass = len(failures) == 0
+
+    profile_label = profile or "default"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # --- Color palette ---
+    GREEN_DARK  = PatternFill("solid", fgColor="16a34a")
+    GREEN_LIGHT = PatternFill("solid", fgColor="dcfce7")
+    RED_DARK    = PatternFill("solid", fgColor="dc2626")
+    RED_LIGHT   = PatternFill("solid", fgColor="fef2f2")
+    AMBER_DARK  = PatternFill("solid", fgColor="d97706")
+    AMBER_LIGHT = PatternFill("solid", fgColor="fef3c7")
+    GREY_HEADER = PatternFill("solid", fgColor="f3f4f6")
+    WHITE       = PatternFill("solid", fgColor="FFFFFF")
+
+    BOLD       = Font(bold=True)
+    BOLD_WHITE = Font(bold=True, color="FFFFFF")
+    HEADER_FONT = Font(bold=True, color="374151")
+
+    thin = Side(style="thin", color="e5e7eb")
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+    CENTER = Alignment(horizontal="center", vertical="center")
+    WRAP   = Alignment(wrap_text=True, vertical="top")
+
+    def _header_row(ws, headers: list[str], row: int = 1) -> None:
+        for col, h in enumerate(headers, start=1):
+            cell = ws.cell(row=row, column=col, value=h)
+            cell.font = HEADER_FONT
+            cell.fill = GREY_HEADER
+            cell.border = BORDER
+            cell.alignment = CENTER
+
+    def _set_col_widths(ws, widths: list[int]) -> None:
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+    wb = Workbook()
+
+    # ---------------------------------------------------------------
+    # Sheet 1 — Summary
+    # ---------------------------------------------------------------
+    ws_sum = wb.active
+    ws_sum.title = "Summary"
+
+    if overall_pass and not warnings_list:
+        status_text = "ALL CHECKS PASSED"
+        status_fill = GREEN_DARK
+    elif overall_pass:
+        status_text = "PASSED WITH WARNINGS"
+        status_fill = AMBER_DARK
+    else:
+        status_text = "CHECKS FAILED"
+        status_fill = RED_DARK
+
+    ws_sum.merge_cells("A1:B1")
+    cell = ws_sum["A1"]
+    cell.value = status_text
+    cell.font = Font(bold=True, size=16, color="FFFFFF")
+    cell.fill = status_fill
+    cell.alignment = CENTER
+    ws_sum.row_dimensions[1].height = 36
+
+    ws_sum.append([])  # spacer
+
+    meta = [
+        ("File scanned",      str(Path(scanned_file).resolve())),
+        ("Profile",           profile_label),
+        ("Scan time",         timestamp),
+        ("Baseline captured", baseline_schema.captured_at[:19].replace("T", " ") + " UTC"),
+        ("Pipedog version",   f"v{__version__}"),
+    ]
+    for label, value in meta:
+        row = ws_sum.max_row + 1
+        ws_sum.cell(row=row, column=1, value=label).font = BOLD
+        ws_sum.cell(row=row, column=2, value=value)
+
+    ws_sum.append([])  # spacer
+
+    count_headers = ["Total Checks", "Passed", "Warnings", "Failed", "Rows", "Columns"]
+    count_values  = [
+        len(all_results), len(passed_list), len(warnings_list),
+        len(failures), current_schema.row_count, current_schema.column_count,
+    ]
+    hrow = ws_sum.max_row + 1
+    for col, h in enumerate(count_headers, start=1):
+        c = ws_sum.cell(row=hrow, column=col, value=h)
+        c.font = HEADER_FONT; c.fill = GREY_HEADER; c.alignment = CENTER; c.border = BORDER
+    vrow = hrow + 1
+    fills = [WHITE, GREEN_LIGHT, AMBER_LIGHT, RED_LIGHT, WHITE, WHITE]
+    for col, (val, fill) in enumerate(zip(count_values, fills), start=1):
+        c = ws_sum.cell(row=vrow, column=col, value=val)
+        c.font = BOLD; c.fill = fill; c.alignment = CENTER; c.border = BORDER
+
+    _set_col_widths(ws_sum, [22, 55, 16, 12, 12, 12])
+
+    # ---------------------------------------------------------------
+    # Sheet 2 — Results
+    # ---------------------------------------------------------------
+    ws_res = wb.create_sheet("Results")
+    headers = ["Column", "Check Type", "Status", "Severity", "Detail"]
+    _header_row(ws_res, headers)
+    ws_res.auto_filter.ref = "A1:E1"
+
+    for r in all_results:
+        if r.passed:
+            label, row_fill = "PASS", GREEN_LIGHT
+        elif r.severity == "warning":
+            label, row_fill = "WARN", AMBER_LIGHT
+        else:
+            label, row_fill = "FAIL", RED_LIGHT
+
+        col_display = r.column if r.column != "__row_count__" else "File (row count)"
+        row_idx = ws_res.max_row + 1
+        values = [col_display, r.check_type, label, r.severity, r.detail]
+        for col, val in enumerate(values, start=1):
+            c = ws_res.cell(row=row_idx, column=col, value=val)
+            c.fill = row_fill
+            c.border = BORDER
+            c.alignment = WRAP
+
+    _set_col_widths(ws_res, [22, 18, 10, 10, 70])
+    ws_res.row_dimensions[1].height = 18
+
+    # ---------------------------------------------------------------
+    # Sheet 3 — Profile
+    # ---------------------------------------------------------------
+    ws_pro = wb.create_sheet("Profile")
+    pro_headers = ["Column", "Type", "Nulls", "Null %", "Unique", "Min", "Max", "Std Dev", "Sample Values"]
+    _header_row(ws_pro, pro_headers)
+
+    for col in current_schema.columns:
+        null_fill = RED_LIGHT if col.null_count > 0 else WHITE
+        unique_str = str(col.unique_count) if col.unique_count != -1 else "merged"
+        min_str = f"{col.min_value:,.4g}" if col.min_value is not None else "-"
+        max_str = f"{col.max_value:,.4g}" if col.max_value is not None else "-"
+        std_str = f"{col.std_dev:,.4g}" if col.std_dev is not None else "-"
+        sample_str = ", ".join(str(v) for v in col.sample_values[:3])
+
+        row_idx = ws_pro.max_row + 1
+        values = [col.name, col.dtype, col.null_count, f"{col.null_pct}%",
+                  unique_str, min_str, max_str, std_str, sample_str]
+        for c_idx, val in enumerate(values, start=1):
+            c = ws_pro.cell(row=row_idx, column=c_idx, value=val)
+            c.border = BORDER
+            c.alignment = Alignment(vertical="center")
+            if c_idx in (3, 4):  # null columns
+                c.fill = null_fill
+                if col.null_count > 0:
+                    c.font = Font(color="dc2626", bold=True)
+
+    _set_col_widths(ws_pro, [20, 12, 8, 9, 9, 12, 12, 10, 35])
+
+    return wb
+
+
+def save_excel_report(
+    wb: Workbook,
+    profile: Optional[str],
+    scanned_file: str,
+) -> Path:
+    """
+    Write an openpyxl Workbook to the reports directory and return its path.
+
+    File naming pattern:
+        .pipedog/<profile>/reports/<stem>-<profile>-<YYYYMMDD-HHMMSS>.xlsx
+
+    Creates the reports/ directory if it does not exist.
+
+    Args:
+        wb:           The Workbook from generate_excel_report().
+        profile:      Profile name, or None for the default profile.
+        scanned_file: Path to the scanned file (used to derive the stem).
+
+    Returns:
+        The absolute Path of the written .xlsx file.
+    """
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stem = Path(scanned_file).stem
+    profile_label = profile or "default"
+    filename = f"{stem}-{profile_label}-{timestamp}.xlsx"
+
+    reports_dir = _pipedog_dir(profile) / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    report_path = reports_dir / filename
+    wb.save(str(report_path))
     return report_path.resolve()
 
 
