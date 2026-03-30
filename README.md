@@ -1,6 +1,6 @@
 # Pipedog
 
-**v0.2.0** — Open source data quality and schema drift detection tool for analysts and data engineers.
+**v0.3.1** — Open source data quality and schema drift detection tool for analysts and data engineers.
 
 Point it at a CSV, Parquet, or JSON file and it will profile the data, auto-generate quality checks, and alert you the moment something changes — with a colour-coded terminal report and a saved HTML report you can open in any browser.
 
@@ -83,7 +83,7 @@ pipedog init sales_jan.csv sales_feb.csv sales_mar.csv --profile sales
 |------|----------|
 | `.pipedog/<profile>/schema.json` | Column names, types, null stats, value ranges, distribution stats, allowed values |
 | `.pipedog/<profile>/checks.json` | Auto-generated quality rules |
-| `.pipedog/<profile>/reports/`    | HTML scan reports (created on first scan) |
+| `.pipedog/<profile>/reports/`    | HTML and Excel scan reports (created on first scan) |
 
 **Auto-generated quality rules:**
 
@@ -126,6 +126,7 @@ pipedog scan data.csv --profile sales --no-report
 
 **After every scan:**
 - An HTML report is saved to `.pipedog/<profile>/reports/<file>-<profile>-<timestamp>.html`
+- An Excel report is saved to `.pipedog/<profile>/reports/<file>-<profile>-<timestamp>.xlsx` (3 sheets: Summary, Results, Profile — colour-coded for analysts)
 - One entry is appended to `.pipedog/<profile>/history.json` (audit trail)
 
 **Exit codes:**
