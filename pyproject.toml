@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pipedog"
-version = "0.3.1"
+version = "0.3.2"
 description = "Data quality and schema drift detection for analysts — CSV, Excel, Parquet, and JSON files"
 authors = ["Jishn <you@example.com>"]
 readme = "README.md"

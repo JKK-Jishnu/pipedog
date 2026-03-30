@@ -216,6 +216,18 @@ def profile_dataframe(df: pd.DataFrame, file_path: str) -> DataSchema:
 
         null_count = int(series.isna().sum())
         null_pct = round(null_count / total * 100, 2) if total > 0 else 0.0
+
+        # Normalize columns that contain unhashable types (dicts, lists from
+        # nested JSON objects/arrays) to their JSON string representation so
+        # that nunique(), unique(), and set operations work without error.
+        try:
+            series.nunique(dropna=True)
+        except TypeError:
+            series = series.apply(
+                lambda x: json.dumps(x, sort_keys=True, default=str)
+                if isinstance(x, (dict, list)) else x
+            )
+
         unique_count = int(series.nunique(dropna=True))
         dtype = _dtype_name(series)
 
