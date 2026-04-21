@@ -9,6 +9,8 @@ Pipedog is a desktop tool that monitors your data files (CSV, Excel, JSON) for q
 
 No installation required. No Python. Just double-click **Pipedog.exe** and start.
 
+**Download:** [Pipedog.exe (Google Drive)](https://drive.google.com/file/d/14zhE-Elj0ThS8TDnE8hNwNMKrC3FIDcs/view)
+
 ---
 
 ## Getting Started

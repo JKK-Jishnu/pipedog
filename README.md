@@ -54,8 +54,9 @@ poetry install
 
 ### Standalone .exe (Windows, no Python needed)
 
-Download `Pipedog.exe` from the [GitHub Releases](https://github.com/JKK-Jishnu/pipedog/releases) page.
-Double-click to run — no installation, no Python, no terminal required.
+**[Download Pipedog.exe (Google Drive)](https://drive.google.com/file/d/14zhE-Elj0ThS8TDnE8hNwNMKrC3FIDcs/view)**
+
+Download, double-click — no installation, no Python, no terminal required.
 
 ### Desktop GUI (via pip)
 
