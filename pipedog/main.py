@@ -1,13 +1,17 @@
 """
-main.py — Pipedog CLI entry point (v0.2.0).
+main.py — Pipedog CLI entry point (v0.4.0).
 
-Commands:
+For a no-terminal alternative, launch the desktop GUI:
+    pipedog-gui
+    python -m pipedog.gui
+
+CLI Commands:
     pipedog init <file> [<file2> ...] [--profile <name>]
         Profile one or more files and save a baseline snapshot.
 
     pipedog scan <file> [--profile <name>] [--no-report]
         Compare a file against the saved snapshot and run quality checks.
-        Generates an HTML report automatically unless --no-report is given.
+        Generates HTML and Excel reports automatically unless --no-report is given.
 
     pipedog profile <file>
         Show a data summary without saving anything.

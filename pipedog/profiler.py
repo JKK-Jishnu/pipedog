@@ -72,25 +72,50 @@ def _pipedog_dir(profile: Optional[str] = None) -> Path:
 # File loading
 # ---------------------------------------------------------------------------
 
-def load_file(file_path: str) -> pd.DataFrame:
+def get_sheet_names(file_path: str) -> list[str]:
+    """Return the list of sheet names for an Excel file (.xlsx or .xlsb)."""
+    path = Path(file_path)
+    ext = path.suffix.lower()
+    if ext == ".xlsx":
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        names = wb.sheetnames
+        wb.close()
+        return names
+    elif ext == ".xlsb":
+        import pyxlsb
+        with pyxlsb.open_workbook(file_path) as wb:
+            return wb.sheets
+    raise ValueError(f"get_sheet_names only supports .xlsx and .xlsb, got '{ext}'")
+
+
+def load_file(
+    file_path: str,
+    sheet_name: str | None = None,
+    skiprows: int = 0,
+) -> pd.DataFrame:
     """
     Read a data file into a pandas DataFrame.
 
     Dispatches to the correct pandas reader based on file extension.
 
     Supported extensions:
-        .csv               — read_csv (infers delimiter and dtypes automatically)
-        .parquet / .pq     — read_parquet (requires pyarrow)
-        .json              — read_json (expects array or records orientation)
-        .xlsx              — read_excel via openpyxl (reads first sheet by default)
-        .xlsb              — read_excel via pyxlsb (reads first sheet by default)
+        .csv               - read_csv (infers delimiter and dtypes automatically)
+        .parquet / .pq     - read_parquet (requires pyarrow)
+        .json              - read_json (expects array or records orientation)
+        .xlsx              - read_excel via openpyxl
+        .xlsb              - read_excel via pyxlsb
 
-    For Excel files, the first sheet is read by default. To read a specific
-    sheet, the file must be handled programmatically — the CLI always reads
-    the first sheet.
+    For Excel files, ``sheet_name`` selects which sheet to read. When omitted
+    the first sheet is used.
+
+    ``skiprows`` skips that many rows before reading the header. Use this when
+    the data file has titles or blank lines above the column header row.
 
     Args:
-        file_path: Relative or absolute path to the data file.
+        file_path:  Relative or absolute path to the data file.
+        sheet_name: Sheet name to read (Excel files only). Defaults to first sheet.
+        skiprows:   Number of rows to skip before the header (default 0).
 
     Returns:
         A pandas DataFrame.
@@ -105,14 +130,18 @@ def load_file(file_path: str) -> pd.DataFrame:
         raise FileNotFoundError(f"File not found: '{file_path}'")
     ext = path.suffix.lower()
     if ext == ".csv":
-        return pd.read_csv(file_path)
+        return pd.read_csv(file_path, skiprows=skiprows or None)
     elif ext in (".parquet", ".pq"):
         return pd.read_parquet(file_path)
     elif ext == ".json":
         return pd.read_json(file_path)
     elif ext == ".xlsx":
         try:
-            return pd.read_excel(file_path, engine="openpyxl")
+            return pd.read_excel(
+                file_path, engine="openpyxl",
+                sheet_name=sheet_name or 0,
+                skiprows=skiprows or None,
+            )
         except ImportError:
             raise ValueError(
                 "Reading .xlsx files requires openpyxl. "
@@ -120,7 +149,11 @@ def load_file(file_path: str) -> pd.DataFrame:
             )
     elif ext == ".xlsb":
         try:
-            return pd.read_excel(file_path, engine="pyxlsb")
+            return pd.read_excel(
+                file_path, engine="pyxlsb",
+                sheet_name=sheet_name or 0,
+                skiprows=skiprows or None,
+            )
         except ImportError:
             raise ValueError(
                 "Reading .xlsb files requires pyxlsb. "

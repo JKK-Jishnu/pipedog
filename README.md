@@ -1,8 +1,8 @@
 # Pipedog
 
-**v0.3.1** — Open source data quality and schema drift detection tool for analysts and data engineers.
+**v0.5.0** — Open source data quality and schema drift detection tool for analysts and data engineers.
 
-Point it at a CSV, Parquet, or JSON file and it will profile the data, auto-generate quality checks, and alert you the moment something changes — with a colour-coded terminal report and a saved HTML report you can open in any browser.
+Point it at a CSV, Excel, Parquet, or JSON file and it will profile the data, auto-generate quality checks, and alert you the moment something changes — with a colour-coded terminal report, a saved Excel report you can open and share, and a **desktop GUI** anyone can run locally without touching the command line.
 
 ---
 
@@ -14,7 +14,8 @@ Pipedog solves this by:
 - **Taking a snapshot** of your data's structure and statistics on day one.
 - **Scanning every new file** against that snapshot and failing loudly when something drifts.
 - **Explaining what went wrong** in plain English, not stack traces.
-- **Saving an HTML report** after every scan — attach it to an email, open it in a browser, share it with your team.
+- **Saving an Excel report** after every scan — colour-coded, 3 sheets (Summary, Results, Profile), ready to share with your team.
+- **Providing a desktop GUI** — no terminal needed, works on Windows, Mac, and Linux.
 
 ---
 
@@ -34,18 +35,39 @@ poetry install
 
 ### Dependencies
 
-| Package  | Purpose                                      |
-|----------|----------------------------------------------|
-| typer    | CLI framework                                |
-| rich     | Colour-coded terminal output                 |
-| pandas   | File reading (CSV, Parquet, JSON)            |
-| pyarrow  | Parquet support for pandas                   |
-| duckdb   | SQL engine (reserved for future use)         |
-| pydantic | Schema validation and JSON I/O               |
+| Package    | Purpose                                        |
+|------------|------------------------------------------------|
+| typer      | CLI framework                                  |
+| rich       | Colour-coded terminal output                   |
+| pandas     | File reading (CSV, Parquet, JSON, Excel)       |
+| pyarrow    | Parquet support for pandas                     |
+| openpyxl   | Excel (.xlsx) read/write and report generation |
+| pyxlsb     | Excel Binary (.xlsb) support                  |
+| duckdb     | SQL engine (reserved for future use)           |
+| pydantic   | Schema validation and JSON I/O                 |
+
+`tkinter` (used for the desktop GUI) ships with the Python standard library — no extra install needed.
 
 ---
 
 ## Quick Start
+
+### Standalone .exe (Windows, no Python needed)
+
+Download `Pipedog.exe` from the [GitHub Releases](https://github.com/JKK-Jishnu/pipedog/releases) page.
+Double-click to run — no installation, no Python, no terminal required.
+
+### Desktop GUI (via pip)
+
+```bash
+pipedog-gui
+# or
+python -m pipedog.gui
+```
+
+The GUI opens a window with three tabs — **Workspace**, **Rules**, and **Reports & History**. Use the **Project folder** picker at the top to point Pipedog at your data folder (where `.pipedog/` will be created).
+
+### CLI
 
 ```bash
 # 1. Profile your file and save a baseline snapshot
@@ -60,7 +82,26 @@ pipedog profile data/orders.csv
 
 ---
 
-## Commands
+## Desktop GUI
+
+Launch with:
+
+```bash
+pipedog-gui          # if installed via pip
+python -m pipedog.gui  # from source
+```
+
+| Tab | What it does |
+|-----|--------------|
+| **Workspace** | Browse a file, set a profile name and data start row, create a baseline, run a scan, or explore data. Excel sheet picker appears automatically for multi-sheet workbooks. Shows colour-coded scan results, column statistics, and an Open Report button. |
+| **Rules** | View, add, edit, and delete quality rules for any profile. Multi-select delete (Ctrl+click) supported. Editing a threshold auto-updates the description. |
+| **Reports & History** | Browse saved Excel reports and open them in Excel. View the full scan audit log with timestamps and pass/warn/fail counts. |
+
+The **Project folder** selector at the top of the window controls where `.pipedog/` lives — point it at any project folder before running a baseline or scan.
+
+---
+
+## CLI Commands
 
 ### `pipedog init <file> [<file2> ...] [--profile <name>]`
 
@@ -83,7 +124,7 @@ pipedog init sales_jan.csv sales_feb.csv sales_mar.csv --profile sales
 |------|----------|
 | `.pipedog/<profile>/schema.json` | Column names, types, null stats, value ranges, distribution stats, allowed values |
 | `.pipedog/<profile>/checks.json` | Auto-generated quality rules |
-| `.pipedog/<profile>/reports/`    | HTML and Excel scan reports (created on first scan) |
+| `.pipedog/<profile>/reports/`    | Excel scan reports (created on first scan) |
 
 **Auto-generated quality rules:**
 
@@ -125,7 +166,6 @@ pipedog scan data.csv --profile sales --no-report
 2. **Quality checks** — null rates, value ranges, row count, new categories, distribution shift
 
 **After every scan:**
-- An HTML report is saved to `.pipedog/<profile>/reports/<file>-<profile>-<timestamp>.html`
 - An Excel report is saved to `.pipedog/<profile>/reports/<file>-<profile>-<timestamp>.xlsx` (3 sheets: Summary, Results, Profile — colour-coded for analysts)
 - One entry is appended to `.pipedog/<profile>/history.json` (audit trail)
 
@@ -144,10 +184,9 @@ Passed Checks
   PASS  No nulls found in 'order_id'.
   PASS  'status' contains only known values.
   PASS  Row count is 10, meets minimum of 8.
-  PASS  'price' std deviation changed 0.0% (baseline=46.4, current=46.4).
   ...
 
-HTML report saved: .pipedog/reports/orders-default-20260329-071607.html
+Excel report saved: .pipedog/reports/orders-default-20260329-071607.xlsx
 ```
 
 **Output example — failure:**
@@ -175,7 +214,7 @@ Shows a data summary without saving anything to disk.
 pipedog profile orders.csv
 ```
 
-Displays: row count, column types, null counts, null %, unique counts, min/max, sample values. Nothing is written to disk — useful for exploring a file before committing to a baseline.
+Displays: row count, column types, null counts, null %, unique counts, min/max, sample values. Useful for exploring a file before committing to a baseline.
 
 ---
 
@@ -217,13 +256,13 @@ pipedog checks edit --profile purchase
 
 ### `pipedog report [--profile <name>] [--last]`
 
-List available HTML reports or open the most recent one in your browser.
+List available Excel reports or open the most recent one.
 
 ```bash
 # List all reports for the default profile
 pipedog report
 
-# Open the most recent report in the browser
+# Open the most recent report
 pipedog report --last
 
 # Open the most recent report for a specific profile
@@ -258,14 +297,14 @@ Each profile stores its own independent snapshot, checks, history, and reports.
 ├── checks.json                    # default profile rules
 ├── history.json                   # default profile audit log
 ├── reports/
-│   └── orders-default-20260329-071607.html
+│   └── orders-default-20260329-071607.xlsx
 │
 ├── purchase/                      # --profile purchase
 │   ├── schema.json
 │   ├── checks.json
 │   ├── history.json
 │   └── reports/
-│       └── purchase_feb-purchase-20260329-143022.html
+│       └── purchase_feb-purchase-20260329-143022.xlsx
 │
 └── gstr1/                         # --profile gstr1
     ├── schema.json
@@ -279,16 +318,15 @@ Commit `.pipedog/` to version control to track schema changes over time, or add 
 
 ## Supported File Types
 
-| Extension         | Format  | Engine    |
-|-------------------|---------|-----------|
-| `.csv`            | CSV     | pandas    |
-| `.parquet` `.pq`  | Parquet | pyarrow   |
-| `.json`           | JSON    | pandas    |
-| `.xlsx`           | Excel   | openpyxl  |
-| `.xlsb`           | Excel Binary | pyxlsb |
+| Extension         | Format        | Engine    |
+|-------------------|---------------|-----------|
+| `.csv`            | CSV           | pandas    |
+| `.parquet` `.pq`  | Parquet       | pyarrow   |
+| `.json`           | JSON          | pandas    |
+| `.xlsx`           | Excel         | openpyxl  |
+| `.xlsb`           | Excel Binary  | pyxlsb    |
 
-File type is detected automatically from the extension.
-For Excel files, the first sheet is read by default.
+File type is detected automatically from the extension. For `.xlsx` / `.xlsb` files with multiple sheets, a sheet picker dialog appears automatically in the GUI.
 
 ---
 
@@ -306,15 +344,15 @@ pipedog init jan.csv feb.csv --profile sales
 
 pipedog scan feb.csv --profile sales
     │
-    ├─ load_file()           reads the new file
-    ├─ load_snapshot()       loads baseline from .pipedog/sales/
-    ├─ profile_dataframe()   profiles the new file
-    ├─ detect_drift()        compares column structure (names, types)
-    ├─ run_quality_checks()  evaluates all 8 check types
-    ├─ generate_html_report() builds the HTML report
-    ├─ save_report()         saves HTML to .pipedog/sales/reports/
-    ├─ append_scan_result()  appends entry to history.json
-    └─ print_scan_results()  renders colour-coded terminal output
+    ├─ load_file()             reads the new file
+    ├─ load_snapshot()         loads baseline from .pipedog/sales/
+    ├─ profile_dataframe()     profiles the new file
+    ├─ detect_drift()          compares column structure (names, types)
+    ├─ run_quality_checks()    evaluates all 8 check types
+    ├─ generate_excel_report() builds the Excel report (3 sheets)
+    ├─ save_excel_report()     saves .xlsx to .pipedog/sales/reports/
+    ├─ append_scan_result()    appends entry to history.json
+    └─ print_scan_results()    renders colour-coded terminal output
 ```
 
 ---
@@ -327,23 +365,25 @@ pipedog/
 ├── README.md               # This file
 ├── LICENSE                 # MIT
 ├── sample_data/
-│   └── orders.csv          # Example file to test with
+│   ├── orders.csv          # Example CSV to test with
+│   └── orders.xlsx         # Example Excel to test with
 └── pipedog/
     ├── __init__.py         # Package version
-    ├── main.py             # All CLI commands and sub-commands
+    ├── gui.py              # Tkinter desktop GUI (pipedog-gui)
+    ├── main.py             # CLI commands (pipedog)
     ├── schema.py           # Pydantic models (ColumnSchema, DataSchema,
     │                       #   QualityCheck, CheckResult, ScanHistory, etc.)
     ├── profiler.py         # File loading, type inference, stats, snapshot I/O,
     │                       #   multi-file merge
     ├── scanner.py          # Drift detection and quality check evaluation
     ├── output.py           # Rich terminal rendering (tables, panels, colours)
-    ├── reporter.py         # HTML report generation and file I/O
+    ├── reporter.py         # Excel report generation and file I/O
     └── history.py          # Scan history persistence (history.json)
 ```
 
 ---
 
-## schema.json Format (v0.2.0)
+## schema.json Format
 
 ```json
 {
@@ -423,10 +463,9 @@ done
 
 ## Roadmap
 
-- [ ] `pipedog history` — show null rate trends over time from history.json
+- [ ] `pipedog history` CLI command — show null rate trends over time from history.json
 - [ ] `pipedog diff` — side-by-side comparison of two snapshots
 - [ ] JSON Lines (`.jsonl`) support
-- [ ] Excel (`.xlsx`) support
 - [ ] `--output json` flag for machine-readable scan results
 - [ ] `pipedogfin` — finance/tax/compliance focused package (GST validation, invoice format checks, accounting API connectors)
 
